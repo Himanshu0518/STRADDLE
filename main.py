@@ -345,7 +345,7 @@ class ShortStraddleStrategy(Strategy):
         """Log each newly opened position."""
         self._log.info(
             f"POSITION OPENED: {event.instrument_id} "
-            f"side={event.position_side} "
+            f"side={event.side} "
             f"qty={event.quantity} "
             f"avg_px={event.avg_px_open}"
         )
