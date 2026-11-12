@@ -22,7 +22,8 @@ from nautilus_trader.core.nautilus_pyo3 import BybitEnvironment, BybitProductTyp
 
 
 class ShortStraddleConfig(StrategyConfig, frozen=True):
-    pass
+    stop_loss_pct: float = 0.01   # 1%
+    take_profit_pct: float = 0.02  # 2%
 
 
 def build_node_config(api_key: str, api_secret: str) -> TradingNodeConfig:
