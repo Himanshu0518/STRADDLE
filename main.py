@@ -249,10 +249,13 @@ class ShortStraddleStrategy(Strategy):
             f"(BTC index: {index_price:.2f}, delta: {abs(atm_strike - index_price):.2f})"
         )
 
-        # 5. Find CALL and PUT at that strike (use 1.0 tolerance for float comparison)
+        # 5. Find CALL and PUT at that strike.
+        #    Use 0.01 tolerance (tighter than 1.0) so we match exactly one strike.
+        #    BTC strikes are round numbers, so floating-point error is well below 0.01.
+        #    A tolerance ≥ 1.0 could accidentally pull in two adjacent strikes.
         atm_opts = [
             o for o in expiry_opts
-            if abs(float(o.strike_price) - atm_strike) < 1.0
+            if abs(float(o.strike_price) - atm_strike) < 0.01
         ]
         call = next((o for o in atm_opts if o.option_kind == OptionKind.CALL), None)
         put = next((o for o in atm_opts if o.option_kind == OptionKind.PUT), None)
@@ -287,20 +290,22 @@ class ShortStraddleStrategy(Strategy):
             call_qty = call.make_qty(Decimal("0.01"))
             put_qty = put.make_qty(Decimal("0.01"))
 
-            # Build SELL market order for the call leg
+            # Build SELL market order for the call leg.
+            # IOC (Immediate-Or-Cancel) is required for market orders on Bybit options;
+            # GTC is rejected by the execution client for market order type.
             call_order = self.order_factory.market(
                 instrument_id=call.id,
                 order_side=OrderSide.SELL,
                 quantity=call_qty,
-                time_in_force=TimeInForce.GTC,
+                time_in_force=TimeInForce.IOC,
             )
 
-            # Build SELL market order for the put leg
+            # Build SELL market order for the put leg (same IOC requirement)
             put_order = self.order_factory.market(
                 instrument_id=put.id,
                 order_side=OrderSide.SELL,
                 quantity=put_qty,
-                time_in_force=TimeInForce.GTC,
+                time_in_force=TimeInForce.IOC,
             )
 
             self._log.info(f"Submitting SELL {call_qty} CALL: {call.id}")
