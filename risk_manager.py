@@ -1,7 +1,4 @@
-"""
-Risk management logic for the BTC ATM Short Straddle — Level 2.
-This module has ZERO NautilusTrader dependencies — pure Python only.
-"""
+"""Stop-loss and take-profit exit conditions — pure Python, no framework dependencies."""
 from __future__ import annotations
 
 
@@ -12,10 +9,22 @@ def check_exit_condition(
     take_profit_pct: float = 0.02,
 ) -> str | None:
     """
-    Returns 'STOP_LOSS', 'TAKE_PROFIT', or None.
+    Evaluate SL/TP conditions for a short straddle.
 
-    Stop-loss:   current_ask_premium >= entry_premium * (1 + stop_loss_pct)
-    Take-profit: current_ask_premium <= entry_premium * (1 - take_profit_pct)
+    Parameters
+    ----------
+    entry_premium : float
+        Quantity-weighted average price paid to enter the straddle.
+    current_ask_premium : float
+        Current combined ask price to buy back both legs.
+    stop_loss_pct : float
+        Close if buyback cost rises above entry by this fraction (default 1%).
+    take_profit_pct : float
+        Close if buyback cost falls below entry by this fraction (default 2%).
+
+    Returns
+    -------
+    'STOP_LOSS', 'TAKE_PROFIT', or None.
     """
     if entry_premium <= 0:
         return None

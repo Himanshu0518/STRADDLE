@@ -1,15 +1,9 @@
-"""
-Configuration dataclasses and node-config builder for the BTC ATM Short Straddle strategy.
-"""
+"""Strategy config and TradingNode config builder."""
 from __future__ import annotations
 
 import os
 
-from nautilus_trader.adapters.bybit import (
-    BybitDataClientConfig,
-    BybitExecClientConfig,
-)
-
+from nautilus_trader.adapters.bybit import BybitDataClientConfig, BybitExecClientConfig
 from nautilus_trader.config import (
     InstrumentProviderConfig,
     LiveExecEngineConfig,
@@ -17,17 +11,17 @@ from nautilus_trader.config import (
     StrategyConfig,
     TradingNodeConfig,
 )
-
 from nautilus_trader.core.nautilus_pyo3 import BybitEnvironment, BybitProductType
 
 
 class ShortStraddleConfig(StrategyConfig, frozen=True):
-    stop_loss_pct: float = 0.01   # 1%
-    take_profit_pct: float = 0.02  # 2%
+    """Configurable risk parameters for the short straddle strategy."""
+    stop_loss_pct: float = 0.01    # 1%  — close if combined ask rises by this amount
+    take_profit_pct: float = 0.02  # 2%  — close if combined ask falls by this amount
 
 
 def build_node_config(api_key: str, api_secret: str) -> TradingNodeConfig:
-    """Construct and return the TradingNodeConfig for the short straddle strategy."""
+    """Build TradingNodeConfig for Bybit TestNet with BTC options only."""
     instrument_cfg = InstrumentProviderConfig(
         load_all=True,
         filters={"base_coin": "BTC"},
@@ -46,11 +40,10 @@ def build_node_config(api_key: str, api_secret: str) -> TradingNodeConfig:
         environment=BybitEnvironment.TESTNET,
         instrument_provider=instrument_cfg,
     )
-    node_config = TradingNodeConfig(
+    return TradingNodeConfig(
         trader_id="TRADER-001",
         logging=LoggingConfig(log_level="INFO"),
         data_clients={"BYBIT": data_client_cfg},
         exec_clients={"BYBIT": exec_client_cfg},
         exec_engine=LiveExecEngineConfig(reconciliation=True),
     )
-    return node_config
