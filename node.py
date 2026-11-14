@@ -17,8 +17,8 @@ from config import ShortStraddleConfig, build_node_config
 from strategy import ShortStraddleStrategy
 
 
-# Patch BybitExecutionClient.generate_order_status_reports to gracefully handle Bybit API
-# bug (upstream issue #4655) where Testnet returns `smpGroup` as a string ("0") instead of an integer (i32).
+# Monkey-patch to handle Bybit TestNet returning smpGroup as a string instead of i32.
+# See README Known Issues and upstream issue #4655.
 async def _patched_generate_order_status_reports(
     self: BybitExecutionClient,
     command: GenerateOrderStatusReports,
@@ -61,20 +61,18 @@ async def _patched_generate_order_status_reports(
             self._cache_reconciliation_order_position_id(report)
             self._log.debug(f"Received {report}", LogColor.MAGENTA)
             reports.append(report)
+
     except ValueError as e:
         if "request canceled" in str(e).lower():
             self._log.debug("OrderStatusReports request cancelled during shutdown")
         elif "symbol` must be initialized" in str(e):
             self._log.warning(
-                "Order history contains instruments not in cache - "
-                "this is expected if orders exist for uncached product types or delisted symbols. "
-                f"Cached instruments: {len(self.bybit_instrument_provider.instruments_pyo3())}",
+                "Order history contains instruments not in cache — expected for uncached symbols.",
                 LogColor.YELLOW,
             )
         elif "invalid type: string" in str(e) and "expected i32" in str(e):
             self._log.warning(
-                "Bybit order history contains schema mismatch (smpGroup string, upstream issue #4655). "
-                "Skipping order history reconciliation.",
+                "Bybit order history smpGroup schema mismatch (issue #4655) — skipping.",
                 LogColor.YELLOW,
             )
         else:
@@ -82,11 +80,7 @@ async def _patched_generate_order_status_reports(
     except Exception as e:
         self._log.exception("Failed to generate OrderStatusReports", e)
 
-    self._log_report_receipt(
-        len(reports),
-        "OrderStatusReport",
-        command.log_receipt_level,
-    )
+    self._log_report_receipt(len(reports), "OrderStatusReport", command.log_receipt_level)
     return reports
 
 
