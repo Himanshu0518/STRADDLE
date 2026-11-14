@@ -29,7 +29,10 @@ def build_node_config(api_key: str, api_secret: str) -> TradingNodeConfig:
     data_client_cfg = BybitDataClientConfig(
         api_key=api_key,
         api_secret=api_secret,
-        product_types=(BybitProductType.OPTION,),
+        # LINEAR is required to open the ticker WebSocket that publishes the BTC index price.
+        # OPTION handles all instrument data and quote ticks for the straddle legs.
+        # The exec client stays OPTION-only — we never submit linear orders.
+        product_types=(BybitProductType.OPTION, BybitProductType.LINEAR),
         environment=BybitEnvironment.TESTNET,
         instrument_provider=instrument_cfg,
     )
@@ -45,5 +48,5 @@ def build_node_config(api_key: str, api_secret: str) -> TradingNodeConfig:
         logging=LoggingConfig(log_level="INFO"),
         data_clients={"BYBIT": data_client_cfg},
         exec_clients={"BYBIT": exec_client_cfg},
-        exec_engine=LiveExecEngineConfig(reconciliation=True),
+        exec_engine=LiveExecEngineConfig(reconciliation=False),
     )

@@ -42,14 +42,19 @@ class ShortStraddleStrategy(Strategy):
           - Take-profit: ask <= entry * (1 - take_profit_pct) [default 2%]
         Exit orders use IOC — a partial close is safer than leaving a naked short open.
 
-    FOK entry / IOC exit asymmetry
-        Entry uses FOK because a partial fill on one leg leaves a naked short —
-        a completely different risk profile from a balanced straddle.
-        Exit uses IOC because at close time, reducing exposure partially is better
-        than not reducing it at all if full size is unavailable.
+    IOC for both entry and exit
+        Both entry and exit use IOC on Bybit TestNet. FOK is not reliably supported
+        for options on Bybit TestNet — orders submitted as FOK hang without any
+        WebSocket acknowledgement, causing the reconciliation engine to timeout.
+        IOC is the correct TIF for Bybit options market orders: it fills immediately
+        against available liquidity and cancels any remainder.
+        The FOK vs IOC tradeoff for entry orders is discussed in the walkthrough:
+        FOK would be theoretically cleaner (no partial straddle) but IOC with
+        partial-fill detection (on_order_expired checks filled_qty) achieves the
+        same safety in practice.
 
     Failure handling
-        Entry leg rejected/expired (FOK = zero fill guaranteed):
+        Entry leg rejected/expired (IOC = zero or partial fill):
           - Other leg already filled → naked short → immediately buy it back.
           - Neither leg filled → reset all state, retry on next index price tick.
         Exit leg rejected/expired:
@@ -158,23 +163,23 @@ class ShortStraddleStrategy(Strategy):
                 instrument_id=call.id,
                 order_side=OrderSide.SELL,
                 quantity=call_qty,
-                time_in_force=TimeInForce.FOK,
+                time_in_force=TimeInForce.IOC,
             )
             put_order = self.order_factory.market(
                 instrument_id=put.id,
                 order_side=OrderSide.SELL,
                 quantity=put_qty,
-                time_in_force=TimeInForce.FOK,
+                time_in_force=TimeInForce.IOC,
             )
 
             # Store CLOIDs before submitting — needed immediately if rejection fires
             self._call_entry_cloid = call_order.client_order_id
             self._put_entry_cloid = put_order.client_order_id
 
-            self.log.info(f"Submitting SELL FOK {call_qty} CALL: {call.id} [cloid={call_order.client_order_id}]")
+            self.log.info(f"Submitting SELL IOC {call_qty} CALL: {call.id} [cloid={call_order.client_order_id}]")
             self.submit_order(call_order)
 
-            self.log.info(f"Submitting SELL FOK {put_qty} PUT: {put.id} [cloid={put_order.client_order_id}]")
+            self.log.info(f"Submitting SELL IOC {put_qty} PUT: {put.id} [cloid={put_order.client_order_id}]")
             self.submit_order(put_order)
 
         except Exception as exc:
@@ -214,7 +219,7 @@ class ShortStraddleStrategy(Strategy):
         if order_type in ("CALL_ENTRY", "PUT_ENTRY"):
             leg = "CALL" if order_type == "CALL_ENTRY" else "PUT"
             self.log.error(f"Entry {leg} leg REJECTED (FOK — zero fill)")
-            self._handle_leg_failure(leg, reason=f"ENTRY_{leg}_REJECTED")
+            self._handle_leg_failure(leg, reason=event.reason)
         elif order_type in ("CALL_EXIT", "PUT_EXIT"):
             leg = "CALL" if order_type == "CALL_EXIT" else "PUT"
             self.log.error(f"Exit {leg} leg REJECTED — re-attempting close")
@@ -222,7 +227,7 @@ class ShortStraddleStrategy(Strategy):
 
     def on_order_expired(self, event: OrderExpired) -> None:
         """
-        FOK entry expiry = zero fill (guaranteed — FOK never partially fills).
+        IOC entry expiry = zero or partial fill — check filled_qty to distinguish.
         IOC exit expiry = insufficient liquidity — re-attempt the close.
         """
         self.log.warning(
@@ -231,8 +236,22 @@ class ShortStraddleStrategy(Strategy):
         order_type = self._classify_order(event.client_order_id)
         if order_type in ("CALL_ENTRY", "PUT_ENTRY"):
             leg = "CALL" if order_type == "CALL_ENTRY" else "PUT"
-            self.log.error(f"Entry {leg} leg expired — zero fill (FOK)")
-            self._handle_leg_failure(leg, reason=f"ENTRY_{leg}_EXPIRED")
+            # IOC may partially fill — check filled_qty to decide how to handle it
+            order = self.cache.order(event.client_order_id)
+            filled_qty = float(order.filled_qty) if order is not None else 0.0
+            if filled_qty > 0:
+                # Partial fill — on_order_filled already set the flag; check if both legs done
+                self.log.warning(
+                    f"Entry {leg} leg partially filled ({filled_qty}) then expired (IOC)"
+                )
+                if self._call_filled and self._put_filled:
+                    self.log.info("Both legs have partial fills — starting Level 2 monitoring")
+                    self.subscribe_quote_ticks(instrument_id=self._call_id)
+                    self.subscribe_quote_ticks(instrument_id=self._put_id)
+            else:
+                # Zero fill — treat as full rejection
+                self.log.error(f"Entry {leg} leg expired with zero fill (IOC miss)")
+                self._handle_leg_failure(leg, reason=f"ENTRY_{leg}_EXPIRED")
         elif order_type in ("CALL_EXIT", "PUT_EXIT"):
             leg = "CALL" if order_type == "CALL_EXIT" else "PUT"
             self.log.warning(f"Exit {leg} leg expired — re-attempting close")
@@ -443,12 +462,22 @@ class ShortStraddleStrategy(Strategy):
         if legs_closed == legs_to_close > 0:
             self.log.info("=== STRADDLE CLOSED ===", color=LogColor.GREEN)
 
+    # Rejection reasons that are permanent — retrying will never succeed.
+    # On these, stop the strategy rather than loop indefinitely.
+    _PERMANENT_REJECTION_REASONS = (
+        "Insufficient margin balance",
+        "Account is banned",
+        "Trading is not allowed",
+    )
+
     def _handle_leg_failure(self, failed_leg: str, reason: str) -> None:
         """
         FOK entry leg failed (zero fill guaranteed).
 
         If the other leg is already short → naked position → trigger exit immediately.
-        If neither leg filled → reset all state and allow retry on the next price tick.
+        If neither leg filled → check if the rejection is permanent (e.g. no margin).
+          - Permanent: stop retrying, log a clear message, leave _orders_submitted=True.
+          - Transient: reset all state and allow retry on the next price tick.
         """
         other_leg = "PUT" if failed_leg == "CALL" else "CALL"
         other_filled = self._put_filled if failed_leg == "CALL" else self._call_filled
@@ -460,15 +489,33 @@ class ShortStraddleStrategy(Strategy):
                 color=LogColor.RED,
             )
             self._trigger_exit(reason=f"LEG_IMBALANCE_{reason}")
-        else:
-            self.log.warning("Both legs failed — resetting state for retry")
-            self._orders_submitted = False
-            self._call_filled = False
-            self._put_filled = False
-            self._call_filled_qty = Decimal("0")
-            self._put_filled_qty = Decimal("0")
-            self._entry_total_cost = 0.0
-            self._entry_total_qty = 0.0
-            self._entry_premium = 0.0
-            self._call_entry_cloid = None
-            self._put_entry_cloid = None
+            return
+
+        # Check if this is a permanent failure — no point retrying
+        rejection_text = reason.lower()
+        is_permanent = any(
+            p.lower() in rejection_text
+            for p in self._PERMANENT_REJECTION_REASONS
+        )
+
+        if is_permanent:
+            self.log.error(
+                f"Permanent rejection — stopping retry. Reason: {reason}. "
+                f"Fix the underlying issue (e.g. add margin) and restart the strategy.",
+                color=LogColor.RED,
+            )
+            # Leave _orders_submitted=True so on_index_price stops retrying
+            return
+
+        # Transient failure — reset and allow retry on next tick
+        self.log.warning("Both legs failed (transient) — resetting state for retry")
+        self._orders_submitted = False
+        self._call_filled = False
+        self._put_filled = False
+        self._call_filled_qty = Decimal("0")
+        self._put_filled_qty = Decimal("0")
+        self._entry_total_cost = 0.0
+        self._entry_total_qty = 0.0
+        self._entry_premium = 0.0
+        self._call_entry_cloid = None
+        self._put_entry_cloid = None
