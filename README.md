@@ -229,15 +229,6 @@ After 5 failed REST retries (~42 seconds), the engine synthesises an `UNKNOWN` r
 **Impact on this implementation:** Orders do reach Bybit (visible in the TestNet UI), but NautilusTrader never receives the fill or rejection confirmation. The strategy's execution logic (ATM selection, order submission, risk management, leg failure handling) is correct and complete — the blocker is entirely within the adapter layer.
 
 **Fix:** Will resolve when issue #4655 is patched in a future nautilus-trader release, or when Bybit TestNet's option order stream stabilises.
-
----
-
-## Other Known Limitations
-
-- **Emergency close is best-effort** — orders submitted in `on_stop` may not reach Bybit before `node.dispose()` tears down the connection. There is no wait for fill confirmation before disposal.
-- **Single expiry, minimum size** — the strategy always targets the nearest expiry at 0.01 BTC per leg (Bybit minimum). Extending to multiple expiries or adjustable lot sizes requires changes to `_submit_straddle` and `atm_selector.py`.
-- **Index price requires LINEAR WebSocket** — `BTCUSDT-LINEAR.BYBIT` is used to receive the BTC spot index price. This requires `BybitProductType.LINEAR` in the data client config. The exec client remains OPTION-only.
-
 ---
 
 ## Dependencies
